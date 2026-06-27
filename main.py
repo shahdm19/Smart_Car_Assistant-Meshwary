@@ -1,9 +1,9 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import re
 import os
-from fastapi.responses import JSONResponse
 from config import config
 from logger import get_logger
 from langchain_groq import ChatGroq
@@ -12,9 +12,18 @@ from models import get_db, UserFeedback
 from consumption_evaluator import ConsumptionEvaluator
 
 
-logger = get_logger(__name__) 
+logger = get_logger(__name__)
 
 app = FastAPI(title="Smart Car Assistant API", version="6.0.0")
+
+# ✅ CORS - لازم عشان الـ frontend يقدر يكلم الـ API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class HistoryMessage(BaseModel):
     role: str
@@ -29,7 +38,18 @@ class ChatResponse(BaseModel):
     response: str
     needs_evaluation_data: bool = False
 
+# ✅ Health check endpoint - Railway بيستخدمه يتأكد إن الـ app عايش
+@app.get("/")
+def health_check():
+    return {
+        "status": "ok",
+        "configured": config.is_configured,
+        "model": config.MODEL_NAME
+    }
+
 def get_llm(model_name: str = None):
+    if not config.is_configured:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY is not configured")
     selected_model = model_name if model_name else config.MODEL_NAME
     return ChatGroq(
         model=selected_model,
@@ -57,20 +77,19 @@ def is_evaluation_intent(text: str) -> bool:
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, db=Depends(get_db)):
     logger.info(f"Received prompt: {request.prompt[:50]}")
-    
+
     if request.expected_liters is not None:
         actual_liters = extract_number_from_text(request.prompt)
-        
+
         if actual_liters is None or actual_liters <= 0:
             return ChatResponse(
                 response="Please enter your **actual consumption in liters** (e.g., 20 or 20.5).",
                 needs_evaluation_data=True
             )
-        
+
         evaluator = ConsumptionEvaluator()
         result = evaluator.evaluate(request.expected_liters, actual_liters)
-        
-   
+
         feedback = UserFeedback(
             calculated_consumption=request.expected_liters,
             actual_consumption=actual_liters,
@@ -80,19 +99,19 @@ async def chat(request: ChatRequest, db=Depends(get_db)):
         )
         db.add(feedback)
         db.commit()
-        
+
         llm = get_llm(config.STRONG_MODEL_NAME)
-       
+
         prompt_for_llm = f"""
         Evaluation Result:
         Status: {result.status}
         Message: {result.message}
         Recommendations: {', '.join(result.recommendations)}
-        
+
         Write a friendly, concise response with emojis.
         """
         response = llm.invoke([HumanMessage(content=prompt_for_llm)])
-        
+
         return ChatResponse(
             response=response.content,
             needs_evaluation_data=False
@@ -106,9 +125,9 @@ async def chat(request: ChatRequest, db=Depends(get_db)):
 
     messages = [SystemMessage(content=config.SYSTEM_PROMPT)]
     for msg in request.history:
-        if msg.role == "user": 
+        if msg.role == "user":
             messages.append(HumanMessage(content=msg.content))
-        elif msg.role == "assistant": 
+        elif msg.role == "assistant":
             messages.append(AIMessage(content=msg.content))
 
     messages.append(HumanMessage(content=request.prompt))
@@ -116,7 +135,6 @@ async def chat(request: ChatRequest, db=Depends(get_db)):
     llm = get_llm()
     response = llm.invoke(messages)
 
-    
     return ChatResponse(
         response=response.content,
         needs_evaluation_data=False
