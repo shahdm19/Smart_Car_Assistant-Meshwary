@@ -1,10 +1,11 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
+import os
 
 class Config(BaseSettings):
-    GROQ_API_KEY: str
+    GROQ_API_KEY: str = ""  # هتاخده من environment variable
     MODEL_NAME: str = "llama-3.1-8b-instant"
-    STRONG_MODEL_NAME: str = "llama-3.1-8b-instant" 
+    STRONG_MODEL_NAME: str = "llama-3.1-8b-instant"
     TEMPERATURE: float = 0.7
     DEBUG: bool = False
     SYSTEM_PROMPT: str = """You are a smart car assistant specializing in fuel consumption analysis and car maintenance.
@@ -21,13 +22,15 @@ Suggest cost savings when possible
 Always respond in English unless the user specifically asks for another language."""
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    DATABASE_URL: str = "sqlite:///chatbot.db"
 
     @property
     def API_KEYS(self) -> List[str]:
-        return [self.GROQ_API_KEY]
+        return [self.GROQ_API_KEY] if self.GROQ_API_KEY else []
 
-    
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.GROQ_API_KEY)
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="allow")
 
 config = Config()
